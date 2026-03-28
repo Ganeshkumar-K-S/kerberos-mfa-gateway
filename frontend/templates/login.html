@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Login</title>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Montserrat', sans-serif;
+        }
+
+        body {
+            height: 100vh;
+            background: linear-gradient(135deg, #0a1f44, #102a63);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .container {
+            background: #ffffff;
+            padding: 40px;
+            border-radius: 12px;
+            width: 350px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        h2 {
+            text-align: center;
+            margin-bottom: 25px;
+            color: #0a1f44;
+        }
+
+        .input-group {
+            margin-bottom: 18px;
+        }
+
+        .input-group label {
+            font-size: 14px;
+            color: #0a1f44;
+            margin-bottom: 6px;
+            display: block;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            outline: none;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: #0a1f44;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #081a38;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 15px;
+            font-size: 13px;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Login</h2>
+
+    <form id="loginForm">
+        <div class="input-group">
+            <label>Email</label>
+            <input type="email" id="email" required>
+        </div>
+
+        <div class="input-group">
+            <label>Password</label>
+            <input type="password" id="password" required>
+        </div>
+
+        <button type="submit">Login</button>
+    </form>
+
+    <!-- OTP SECTION -->
+    <div id="otpSection" class="hidden">
+        <div class="input-group">
+            <label>Enter OTP</label>
+            <input type="text" id="otp">
+        </div>
+        <button onclick="verifyOtp()">Verify OTP</button>
+    </div>
+
+    <div class="footer">
+        Don't have an account? <a href="register.html">Register</a>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+
+<script>
+let storedEmail = "";
+let storedPassword = "";
+
+async function deriveKc(password) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(password);
+    const hash = await crypto.subtle.digest("SHA-256", data);
+    return new Uint8Array(hash);
+}
+
+function decryptAES(cipherTextBase64, keyBytes) {
+    const keyHex = Array.from(keyBytes)
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+
+    const key = CryptoJS.enc.Hex.parse(keyHex);
+
+    const decrypted = CryptoJS.AES.decrypt(
+        { ciphertext: CryptoJS.enc.Base64.parse(cipherTextBase64) },
+        key,
+        { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+    );
+
+    return decrypted.toString(CryptoJS.enc.Utf8);
+}
+
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    storedEmail = document.getElementById("email").value;
+    storedPassword = document.getElementById("password").value;
+
+    const res = await fetch("http://127.0.0.1:8000/auth/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            email: storedEmail,
+            password: storedPassword,
+            id_tgs: "TGS1",
+            ts1: new Date().toISOString()
+        })
+    });
+
+    const result = await res.json();
+
+    if (result.error) {
+        alert(result.error);
+        return;
+    }
+
+    alert("OTP sent to your email");
+    document.getElementById("otpSection").classList.remove("hidden");
+});
+
+async function verifyOtp() {
+    const otp = document.getElementById("otp").value;
+
+    const res = await fetch("http://127.0.0.1:8000/auth/verify-otp", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            email: storedEmail,
+            otp: otp,
+            password: storedPassword   // ⭐ IMPORTANT FIX
+        })
+    });
+
+    const result = await res.json();
+
+    if (!result.response) {
+        alert("Invalid OTP");
+        return;
+    }
+
+    const Kc = await deriveKc(storedPassword);  // SAME derivation as backend
+    const decrypted = decryptAES(result.response, Kc);
+
+    if (!decrypted || decrypted.length < 10) {
+        alert("Decryption failed (wrong key)");
+        return;
+    }
+
+    console.log("Decrypted:", decrypted);
+
+    const parts = decrypted.split("|");
+
+    if (parts.length < 6) {
+        alert("Invalid response format");
+        return;
+    }
+
+    const Kc_tgs = parts[0];
+    const IDc = parts[1];
+    const IDtgs = parts[2];
+    const TS2 = parts[3];
+    const lifetime2 = parseInt(parts[4]);
+    const ticket_tgs = parts[5];
+
+    if (IDc !== storedEmail) return alert("User mismatch");
+    if (IDtgs !== "TGS1") return alert("Invalid TGS");
+
+    const ts = new Date(TS2 + "Z"); 
+    const now = new Date();
+
+    if ((now - ts) / 1000 > lifetime2) {
+        alert("Session expired");
+        return;
+    }
+
+    localStorage.setItem("ticket_tgs", ticket_tgs);
+    localStorage.setItem("session_key", Kc_tgs);
+
+    alert("Login successful");
+}
+</script>
+
+</body>
+</html>
