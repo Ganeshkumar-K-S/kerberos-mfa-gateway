@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Kerberos Gateway</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+<body>
+<script>
+function encryptAES(plainText, keyHex) {
+    const key = CryptoJS.enc.Hex.parse(keyHex);
+
+    const encrypted = CryptoJS.AES.encrypt(
+        plainText,
+        key,
+        { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+    );
+
+    return encrypted.ciphertext.toString(CryptoJS.enc.Base64);
+}
+
+function decryptAES(cipherTextBase64, keyHex) {
+    const key = CryptoJS.enc.Hex.parse(keyHex);
+
+    const decrypted = CryptoJS.AES.decrypt(
+        { ciphertext: CryptoJS.enc.Base64.parse(cipherTextBase64) },
+        key,
+        { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+    );
+
+    return decrypted.toString(CryptoJS.enc.Utf8);
+}
+
+async function init() {
+
+    const ticket_tgs = localStorage.getItem("ticket_tgs");
+    const session_key = localStorage.getItem("session_key");
+    const email = localStorage.getItem("email");
+
+    if (!ticket_tgs || !session_key || !email) {
+        window.location.href = "login.html";
+        return;
+    }
+
+    try {
+        const ts = new Date().toISOString();
+        const authPlain = `${email}|ADc|${ts}`;
+        const authenticator = encryptAES(authPlain, session_key);
+
+        const res = await fetch("http://127.0.0.1:8000/tgs/request-ticket", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                ticket_tgs: ticket_tgs,
+                authenticator: authenticator,
+                idv: "SERVICE1"
+            })
+        });
+
+        const result = await res.json();
+
+        if (result.error) {
+            window.location.href = "login.html";
+            return;
+        }
+
+        if (!result.response) {
+            window.location.href = "login.html";
+            return;
+        }
+
+        const decrypted = decryptAES(result.response, session_key);
+
+        if (!decrypted || decrypted.length < 10) {
+            window.location.href = "login.html";
+            return;
+        }
+
+
+        alert(decrypted);
+
+        const parts = decrypted.split("|");
+
+        if (parts.length < 5) {
+            window.location.href = "login.html";
+            return;
+        }
+
+        const Kc_v = parts[0];
+        const TS4 = parts[2];
+        const lifetime4 = parseInt(parts[3]);
+        const ticket_v = parts[4];
+
+        const ts4 = new Date(TS4 + "Z");
+        const now = new Date();
+
+        if ((now - ts4) / 1000 > lifetime4) {
+            window.location.href = "login.html";
+            return;
+        }
+
+        localStorage.setItem("ticket_v", ticket_v);
+        localStorage.setItem("service_key", Kc_v);
+
+        window.location.href = "services.html";
+
+    } catch (err) {
+        window.location.href = "login.html";
+    }
+}
+
+window.onload = init;
+</script>
+<h2>Processing authentication...</h2>
+
+</body>
+</html>

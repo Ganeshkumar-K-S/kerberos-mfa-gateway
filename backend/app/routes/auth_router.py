@@ -8,7 +8,7 @@ from app.services.otp_services import generate_otp, send_email_otp
 from app.models.auth_models import LoginData, VerifyOtpData
 from app.utils.tokens import create_session_token
 from app.utils.tickets import create_ticket
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.services.encryption_services import encrypt,decrypt
 import secrets
 from app.config import K_AS, K_TGS
@@ -60,6 +60,9 @@ def register_user(
 # Phase - I
 
 # C -> AS
+import secrets
+from datetime import datetime, timedelta
+
 @auth_router.post("/login")
 def login(
     user_data: LoginData,
@@ -89,6 +92,17 @@ def login(
         if input_hash != stored_hash:
             return {"error": "Invalid password"}
 
+        nonce = secrets.token_hex(16)
+        expires_at = datetime.utcnow() + timedelta(minutes=2)
+
+        cursor.execute(
+            """
+            INSERT INTO challenges (user_id, nonce, expires_at, used)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (user_id, nonce, expires_at, False)
+        )
+
         otp = generate_otp()
 
         cursor.execute(
@@ -109,13 +123,14 @@ def login(
             "message": "OTP sent",
             "IDc": user_data.email,
             "IDtgs": user_data.id_tgs,
-            "TS1": user_data.ts1
+            "TS1": user_data.ts1,
+            "nonce": nonce
         }
 
     except Exception as e:
         return {"error": str(e)}
     
-
+    
 #AS -> C
 @auth_router.post("/verify-otp")
 def verify_otp(
@@ -139,17 +154,66 @@ def verify_otp(
         if stored_otp != user_data.otp:
             return {"error": "Invalid OTP"}
 
-        Kc = hashlib.sha256(user_data.password.encode()).digest()
+        cursor.execute(
+            """
+            SELECT nonce, used, expires_at 
+            FROM challenges 
+            WHERE user_id = %s 
+            ORDER BY challenge_id DESC 
+            LIMIT 1
+            """,
+            (user_id,)
+        )
+        challenge = cursor.fetchone()
+
+        if not challenge:
+            return {"error": "No challenge found"}
+
+        stored_nonce, used, expires_at = challenge
+
+        if used:
+            return {"error": "Replay attack detected"}
+
+        if datetime.utcnow() > expires_at:
+            return {"error": "Nonce expired"}
+        
+        expected_response = hashlib.sha256(
+            (user_data.password + stored_nonce).encode()
+        ).hexdigest()
+
+        if user_data.response != expected_response:
+            return {"error": "Invalid response"}
+
+        cursor.execute(
+            "UPDATE challenges SET used = TRUE WHERE user_id = %s",
+            (user_id,)
+        )
+
+        Kc = hashlib.sha256(user_data.password.encode()).hexdigest()
         Kc_tgs = generate_session_key()
 
-        TS2 = datetime.utcnow().isoformat()
+        TS2 = datetime.utcnow()
         lifetime2 = 1800
+        expires_at_ticket = TS2 + timedelta(seconds=lifetime2)
 
-        ticket_tgs_plain = f"{Kc_tgs.hex()}|{user_data.email}|ADc|TGS1|{TS2}|{lifetime2}"
+        ticket_tgs_plain = f"{Kc_tgs.hex()}|{user_data.email}|ADc|TGS1|{TS2.isoformat()}|{lifetime2}"
         ticket_tgs = encrypt(ticket_tgs_plain, K_TGS.encode())
 
-        response_plain = f"{Kc_tgs.hex()}|{user_data.email}|TGS1|{TS2}|{lifetime2}|{ticket_tgs}"
-        encrypted_response = encrypt(response_plain, Kc)
+        response_plain = f"{Kc_tgs.hex()}|{user_data.email}|TGS1|{TS2.isoformat()}|{lifetime2}|{ticket_tgs}"
+        encrypted_response = encrypt(response_plain, bytes.fromhex(Kc))
+
+        cursor.execute(
+            """
+            INSERT INTO tickets (user_id, tgt, session_key, expires_at)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                user_id,
+                ticket_tgs,
+                Kc_tgs.hex(),
+                expires_at_ticket
+            )
+        )
 
         cursor.execute(
             "UPDATE users SET otp_secret = NULL WHERE email = %s",
@@ -159,10 +223,9 @@ def verify_otp(
         db.commit()
         cursor.close()
 
-        print(encrypted_response)
         return {
             "response": encrypted_response,
-            "ticket_tgs": ticket_tgs
+            "tgt": ticket_tgs
         }
 
     except Exception as e:

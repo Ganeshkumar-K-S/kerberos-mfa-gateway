@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Secure Service Dashboard</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+
+<style>
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Montserrat', sans-serif;
+}
+
+body {
+    height: 100vh;
+    background: rgb(238, 237, 247);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.container {
+    width: 90%;
+    max-width: 900px;
+    padding: 40px;
+    border-radius: 20px;
+    background: white;
+    backdrop-filter: blur(15px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    text-align: center;
+}
+
+.dashboard {
+    display: none;
+    margin-top: 20px;
+}
+
+.card {
+    margin-top: 20px;
+    padding: 20px;
+    border-radius: 15px;
+    background: rgba(255,255,255,0.15);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+}
+
+.badge {
+    display: inline-block;
+    padding: 8px 15px;
+    border-radius: 20px;
+    background: green;
+    font-size: 14px;
+    margin-top: 10px;
+    color:white;
+}
+
+.logout {
+    margin-top: 25px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 25px;
+    background: #6c47ff;
+    cursor: pointer;
+    color:white;
+}
+
+.logout:hover {
+    background: rgb(114, 82, 228);
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+    <h2 id="status">🔐 Authenticating with Service...</h2>
+
+    <div id="dashboard" class="dashboard">
+        <h1>Welcome to <span style="color:#6c47ff">Secure Dashboard</span></h1>
+        <p>Kerberos Authentication Successful</p>
+
+        <div class="card">
+            <p><b>User:</b> <span id="user"></span></p>
+            <p><b>Service:</b> SERVICE1</p>
+            <span class="badge">Session Active</span>
+        </div>
+
+        <button class="logout" onclick="logout()">Logout</button>
+    </div>
+</div>
+
+<script>
+function encryptAES(plainText, keyHex) {
+    const key = CryptoJS.enc.Hex.parse(keyHex);
+
+    const encrypted = CryptoJS.AES.encrypt(
+        plainText,
+        key,
+        { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+    );
+
+    return encrypted.ciphertext.toString(CryptoJS.enc.Base64);
+}
+
+function decryptAES(cipherTextBase64, keyHex) {
+    const key = CryptoJS.enc.Hex.parse(keyHex);
+
+    const decrypted = CryptoJS.AES.decrypt(
+        { ciphertext: CryptoJS.enc.Base64.parse(cipherTextBase64) },
+        key,
+        { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+    );
+
+    return decrypted.toString(CryptoJS.enc.Utf8);
+}
+
+async function init() {
+
+    const ticket_v = localStorage.getItem("ticket_v");
+    const service_key = localStorage.getItem("service_key");
+    const email = localStorage.getItem("email");
+
+    if (!ticket_v || !service_key || !email) {
+        window.location.href = "login.html";
+        return;
+    }
+
+    try {
+        const TS5 = new Date().toISOString();
+
+        const authPlain = `${email}|ADc|${TS5}`;
+        const authenticator = encryptAES(authPlain, service_key);
+
+        const res = await fetch("http://127.0.0.1:8000/service/access", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                ticket_v: ticket_v,
+                authenticator: authenticator
+            })
+        });
+
+        const result = await res.json();
+
+        if (result.error || !result.response) {
+            alert("Service authentication failed");
+            window.location.href = "login.html";
+            return;
+        }
+
+        const decrypted = decryptAES(result.response, service_key);
+
+        if (!decrypted) {
+            alert("Decryption failed");
+            window.location.href = "login.html";
+            return;
+        }
+
+        const original = new Date(TS5);
+        const returned = new Date(decrypted);
+
+        if ((returned - original) / 1000 !== 1) {
+            alert("Timestamp validation failed");
+            window.location.href = "login.html";
+            return;
+        }
+        alert("Service authenticated. TS5+1 received: " + decrypted);
+
+        document.getElementById("status").innerText = "Authentication Successful";
+        document.getElementById("dashboard").style.display = "block";
+        document.getElementById("user").innerText = email;
+
+    } catch (err) {
+        alert("Unexpected error");
+        window.location.href = "login.html";
+    }
+}
+
+function logout() {
+    localStorage.clear();
+    window.location.href = "login.html";
+}
+
+window.onload = init;
+</script>
+
+</body>
+</html>

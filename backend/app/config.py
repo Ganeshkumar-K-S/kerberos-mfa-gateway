@@ -18,3 +18,4 @@ EMAIL_FROM = os.getenv("EMAIL_FROM")
 
 K_AS = os.getenv("K_AS")
 K_TGS = os.getenv("K_TGS")
+K_SERVICE = "K_V"

@@ -17,3 +17,4 @@ class VerifyOtpData(BaseModel):
     email: str
     otp: str
     password: str
+    response : str
