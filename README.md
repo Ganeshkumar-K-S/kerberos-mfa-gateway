@@ -5,5 +5,5 @@
 </p>
 
 <p align="center">
-  <img src="frontend/images/page2_.png" width="700"/>
+  <img src="frontend/images/page_2.png" width="700"/>
 </p>
